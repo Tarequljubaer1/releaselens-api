@@ -1,0 +1,1 @@
+{"version":3,"file":"score.util.js","sourceRoot":"","sources":["../../../src/utils/score.util.ts"],"names":[],"mappings":";;AAAA,wCAIG;AAJH,SAAgB,cAAc,CAAC,KAAa;IACxC,IAAI,KAAK,GAAG,CAAC;QAAE,OAAO,CAAC,CAAC;IACxB,IAAI,KAAK,GAAG,GAAG;QAAE,OAAO,GAAG,CAAC;IAC5B,OAAO,IAAI,CAAC,KAAK,CAAC,KAAK,CAAC,CAAC;AAC3B,CAAC"}
