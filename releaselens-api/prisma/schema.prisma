@@ -1,0 +1,80 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id        String       @id @default(cuid())
+  name      String       @unique
+  isActive  Boolean      @default(true)
+  repoUrl   String?
+  defaultBranch String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  pipelineRuns PipelineRun[]
+}
+
+model PipelineRun {
+  id         String        @id @default(cuid())
+  projectId  String
+  project    Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  ciProvider String
+  pipelineId String
+  status     String
+  commitSha  String?
+  branch     String?
+
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  signals    QualitySignal?
+  result     QualityResult?
+
+  @@unique([ciProvider, pipelineId], name: "ciProvider_pipelineId")
+  @@index([projectId, createdAt])
+}
+
+model QualitySignal {
+  id            String     @id @default(cuid())
+  pipelineRunId String     @unique
+  pipelineRun   PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+
+  buildPassed     Boolean?
+  lintPassed      Boolean?
+  unitPassed      Boolean?
+  unitTotal       Int?
+  unitFailed      Int?
+  unitSkipped     Int?
+  coveragePresent Boolean?
+  coveragePct     Float?
+  e2ePresent      Boolean?
+  e2ePassed       Boolean?
+  e2eEnv          String?
+  sonarPresent    Boolean?
+  sonarGatePassed Boolean?
+  rawPayload      Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model QualityResult {
+  id            String      @id @default(cuid())
+  pipelineRunId String      @unique
+  pipelineRun   PipelineRun @relation(fields: [pipelineRunId], references: [id], onDelete: Cascade)
+
+  score       Int
+  level       String
+  readiness   String
+  reasons     Json
+  explanation String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

@@ -1,0 +1,222 @@
+name: ReleaseLens CI
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        required: false
+        type: string
+        default: "20"
+      e2e_env:
+        required: false
+        type: string
+        default: "stage"
+    secrets:
+      RELEASELENS_URL:
+        required: true
+      RELEASELENS_TOKEN:
+        required: false
+
+jobs:
+  test_scan:
+    runs-on: ubuntu-latest
+    outputs:
+      build_passed: ${{ steps.out.outputs.build_passed }}
+      lint_passed: ${{ steps.out.outputs.lint_passed }}
+
+      unit_passed: ${{ steps.out.outputs.unit_passed }}
+      unit_total: ${{ steps.out.outputs.unit_total }}
+      unit_failed: ${{ steps.out.outputs.unit_failed }}
+      unit_skipped: ${{ steps.out.outputs.unit_skipped }}
+
+      coverage_present: ${{ steps.out.outputs.coverage_present }}
+      coverage_pct: ${{ steps.out.outputs.coverage_pct }}
+
+      e2e_present: ${{ steps.out.outputs.e2e_present }}
+      e2e_passed: ${{ steps.out.outputs.e2e_passed }}
+      e2e_env: ${{ steps.out.outputs.e2e_env }}
+
+      sonar_present: ${{ steps.out.outputs.sonar_present }}
+      sonar_gate_passed: ${{ steps.out.outputs.sonar_gate_passed }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install
+        run: npm ci
+
+      - name: Build (if present)
+        id: build
+        run: npm run build --if-present
+
+      - name: Lint (if present)
+        id: lint
+        run: npm run lint --if-present
+
+      # --- Unit tests (Jest) with coverage + junit
+      - name: Unit tests (Jest) + coverage
+        id: unit
+        run: |
+          # Ensure jest-junit is available (better: add to devDependencies once)
+          npm i -D jest-junit || true
+
+          mkdir -p test-results
+          export JEST_JUNIT_OUTPUT="test-results/junit.xml"
+
+          # If repo already configures jest-junit via jest config, this still works.
+          npm test -- --coverage
+
+      # --- E2E only if Playwright config exists
+      - name: E2E (Playwright if present)
+        id: e2e
+        continue-on-error: true
+        run: |
+          if [ -f "playwright.config.ts" ] || [ -f "playwright.config.js" ]; then
+            echo "E2E_RAN=true" >> $GITHUB_ENV
+            npx playwright install --with-deps
+            npx playwright test
+          else
+            echo "E2E_RAN=false" >> $GITHUB_ENV
+            echo "No Playwright config found; skipping E2E."
+          fi
+
+      # --- SonarQube scan (assumes repo has an npm script or a shell script)
+      - name: SonarQube scan (if present)
+        id: sonar
+        continue-on-error: true
+        run: |
+          # Try common patterns; pick one that exists
+          if npm run | grep -q "sonar"; then
+            npm run sonar
+          elif [ -f "./sonar.sh" ]; then
+            ./sonar.sh
+          else
+            echo "No sonar script found; skipping."
+            exit 0
+          fi
+
+      - name: Extract metrics + set outputs
+        id: out
+        if: always()
+        run: |
+          # Build/Lint
+          if [ "${{ steps.build.outcome }}" = "success" ]; then echo "build_passed=true" >> $GITHUB_OUTPUT; else echo "build_passed=false" >> $GITHUB_OUTPUT; fi
+          if [ "${{ steps.lint.outcome }}" = "success" ]; then echo "lint_passed=true" >> $GITHUB_OUTPUT; else echo "lint_passed=false" >> $GITHUB_OUTPUT; fi
+
+          # Unit
+          if [ "${{ steps.unit.outcome }}" = "success" ]; then echo "unit_passed=true" >> $GITHUB_OUTPUT; else echo "unit_passed=false" >> $GITHUB_OUTPUT; fi
+
+          # JUnit counts (best-effort)
+          UNIT_XML="test-results/junit.xml"
+          if [ -f "$UNIT_XML" ]; then
+            total=$(grep -o 'tests="[^"]*"' "$UNIT_XML" | head -1 | cut -d'"' -f2 || echo "")
+            failed=$(grep -o 'failures="[^"]*"' "$UNIT_XML" | head -1 | cut -d'"' -f2 || echo "0")
+            skipped=$(grep -o 'skipped="[^"]*"' "$UNIT_XML" | head -1 | cut -d'"' -f2 || echo "0")
+            echo "unit_total=$total" >> $GITHUB_OUTPUT
+            echo "unit_failed=$failed" >> $GITHUB_OUTPUT
+            echo "unit_skipped=$skipped" >> $GITHUB_OUTPUT
+          else
+            echo "unit_total=" >> $GITHUB_OUTPUT
+            echo "unit_failed=" >> $GITHUB_OUTPUT
+            echo "unit_skipped=" >> $GITHUB_OUTPUT
+          fi
+
+          # Coverage pct
+          COV_JSON="coverage/coverage-summary.json"
+          if [ -f "$COV_JSON" ]; then
+            pct=$(node -e "const c=require('./coverage/coverage-summary.json'); console.log(c.total.lines.pct ?? '')" || echo "")
+            echo "coverage_present=true" >> $GITHUB_OUTPUT
+            echo "coverage_pct=$pct" >> $GITHUB_OUTPUT
+          else
+            echo "coverage_present=false" >> $GITHUB_OUTPUT
+            echo "coverage_pct=" >> $GITHUB_OUTPUT
+          fi
+
+          # E2E
+          if [ "$E2E_RAN" = "true" ]; then
+            echo "e2e_present=true" >> $GITHUB_OUTPUT
+            echo "e2e_env=${{ inputs.e2e_env }}" >> $GITHUB_OUTPUT
+            if [ "${{ steps.e2e.outcome }}" = "success" ]; then echo "e2e_passed=true" >> $GITHUB_OUTPUT; else echo "e2e_passed=false" >> $GITHUB_OUTPUT; fi
+          else
+            echo "e2e_present=false" >> $GITHUB_OUTPUT
+            echo "e2e_passed=" >> $GITHUB_OUTPUT
+            echo "e2e_env=" >> $GITHUB_OUTPUT
+          fi
+
+          # Sonar (MVP: presence + "gate" based on job success)
+          # Later: replace with real Quality Gate API status.
+          if [ "${{ steps.sonar.outcome }}" = "success" ]; then
+            echo "sonar_present=true" >> $GITHUB_OUTPUT
+            echo "sonar_gate_passed=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.sonar.outcome }}" = "failure" ]; then
+            echo "sonar_present=true" >> $GITHUB_OUTPUT
+            echo "sonar_gate_passed=false" >> $GITHUB_OUTPUT
+          else
+            echo "sonar_present=false" >> $GITHUB_OUTPUT
+            echo "sonar_gate_passed=" >> $GITHUB_OUTPUT
+          fi
+
+  releaselens_report:
+    runs-on: ubuntu-latest
+    needs: [test_scan]
+    if: always()
+    steps:
+      - name: Create releaselens.json
+        run: |
+          cat > releaselens.json <<EOF
+          {
+            "projectName": "${{ github.repository }}",
+            "pipelineId": "${{ github.run_id }}",
+            "commitSha": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "signals": {
+              "buildPassed": ${{ needs.test_scan.outputs.build_passed }},
+              "lintPassed": ${{ needs.test_scan.outputs.lint_passed }},
+
+              "unitPassed": ${{ needs.test_scan.outputs.unit_passed }},
+              "unitTotal": ${{ needs.test_scan.outputs.unit_total || 'null' }},
+              "unitFailed": ${{ needs.test_scan.outputs.unit_failed || 'null' }},
+              "unitSkipped": ${{ needs.test_scan.outputs.unit_skipped || 'null' }},
+
+              "coveragePresent": ${{ needs.test_scan.outputs.coverage_present || 'null' }},
+              "coveragePct": ${{ needs.test_scan.outputs.coverage_pct || 'null' }},
+
+              "e2ePresent": ${{ needs.test_scan.outputs.e2e_present || 'false' }},
+              "e2ePassed": ${{ needs.test_scan.outputs.e2e_passed || 'null' }},
+              "e2eEnv": "${{ needs.test_scan.outputs.e2e_env || '' }}",
+
+              "sonarPresent": ${{ needs.test_scan.outputs.sonar_present || 'false' }},
+              "sonarGatePassed": ${{ needs.test_scan.outputs.sonar_gate_passed || 'null' }},
+
+              "rawPayload": {
+                "ci": {
+                  "runId": "${{ github.run_id }}",
+                  "runNumber": "${{ github.run_number }}",
+                  "workflow": "${{ github.workflow }}",
+                  "actor": "${{ github.actor }}",
+                  "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                }
+              }
+            }
+          }
+          EOF
+          cat releaselens.json
+
+      - name: Post to ReleaseLens
+        env:
+          RELEASELENS_URL: ${{ secrets.RELEASELENS_URL }}
+          RELEASELENS_TOKEN: ${{ secrets.RELEASELENS_TOKEN }}
+        run: |
+          if [ -z "$RELEASELENS_URL" ]; then
+            echo "RELEASELENS_URL missing; skipping."
+            exit 0
+          fi
+
+          curl -sS -X POST "$RELEASELENS_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $RELEASELENS_TOKEN" \
+            --data-binary @releaselens.json || true

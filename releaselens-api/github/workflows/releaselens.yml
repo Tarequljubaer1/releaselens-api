@@ -1,0 +1,98 @@
+name: ReleaseLens
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  releaselens:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install
+        run: npm ci
+
+      - name: Build (if present)
+        run: npm run build --if-present
+
+      - name: Lint (if present)
+        run: npm run lint --if-present
+
+      - name: Unit tests (Jest) + coverage
+        run: npm test -- --coverage
+
+      - name: Detect Playwright + run E2E (optional)
+        id: e2e
+        continue-on-error: true
+        run: |
+          if [ -f "playwright.config.ts" ] || [ -f "playwright.config.js" ]; then
+            echo "E2E_RAN=true" >> $GITHUB_ENV
+            npx playwright install --with-deps
+            npx playwright test
+          else
+            echo "E2E_RAN=false" >> $GITHUB_ENV
+            echo "No Playwright config found; skipping E2E."
+          fi
+
+      - name: Create releaselens.json
+        run: |
+          COV_JSON="coverage/coverage-summary.json"
+          if [ -f "$COV_JSON" ]; then
+            COV_PRESENT=true
+            COV_PCT=$(node -e "const c=require('./coverage/coverage-summary.json'); console.log(c.total.lines.pct ?? '')")
+          else
+            COV_PRESENT=false
+            COV_PCT=""
+          fi
+
+          if [ "$E2E_RAN" = "true" ]; then
+            E2E_PRESENT=true
+            # If playwright step succeeded, it's passed; if it failed, this job still continues
+            # We detect pass/fail by checking step outcome via GitHub context is not available here,
+            # so MVP: mark as true if ran; let later upgrade handle exact.
+            E2E_PASSED=null
+            E2E_ENV="stage"
+          else
+            E2E_PRESENT=false
+            E2E_PASSED=null
+            E2E_ENV=""
+          fi
+
+          cat > releaselens.json <<EOF
+          {
+            "projectName": "${{ github.repository }}",
+            "pipelineId": "${{ github.run_id }}",
+            "commitSha": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "signals": {
+              "buildPassed": true,
+              "lintPassed": true,
+              "unitPassed": true,
+              "coveragePresent": $COV_PRESENT,
+              "coveragePct": ${COV_PCT:-null},
+              "e2ePresent": $E2E_PRESENT,
+              "e2ePassed": $E2E_PASSED,
+              "e2eEnv": "$E2E_ENV",
+              "sonarPresent": false,
+              "sonarGatePassed": null
+            }
+          }
+          EOF
+
+          cat releaselens.json
+
+      - name: Post to ReleaseLens
+        env:
+          RELEASELENS_URL: ${{ secrets.RELEASELENS_URL }}
+          RELEASELENS_TOKEN: ${{ secrets.RELEASELENS_TOKEN }}
+        run: |
+          curl -sS -X POST "$RELEASELENS_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $RELEASELENS_TOKEN" \
+            --data-binary @releaselens.json

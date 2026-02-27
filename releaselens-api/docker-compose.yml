@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: releaselens-db
+    environment:
+      POSTGRES_USER: releaselens
+      POSTGRES_PASSWORD: releaselens
+      POSTGRES_DB: releaselens
+    ports:
+      - "5432:5432"
+    volumes:
+      - releaselens_pgdata:/var/lib/postgresql/data
+
+volumes:
+  releaselens_pgdata:

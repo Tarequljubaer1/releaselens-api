@@ -1,0 +1,13 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  releaselens:
+    uses: your-org/your-central-repo/.github/workflows/releaselens-ci.yml@main
+    secrets:
+      RELEASELENS_URL: ${{ secrets.RELEASELENS_URL }}
+      RELEASELENS_TOKEN: ${{ secrets.RELEASELENS_TOKEN }}
