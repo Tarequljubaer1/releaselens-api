@@ -8,7 +8,7 @@
     "build": "npx nest build -p tsconfig.build.json",
     "start": "node dist/src/main.js",
     "start:dev": "node dist/src/main.js",
-    "start:prod": "node dist/src/main.js",
+    "start:prod": "node dist/src/main",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "lint": "echo \"(source not included in this zip)\"",
